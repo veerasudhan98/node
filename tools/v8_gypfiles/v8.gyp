@@ -742,6 +742,13 @@
         '<@(inspector_all_sources)',
       ],
       'conditions': [
+        ['v8_enable_third_party_heap==1', {
+          # TODO(targos): add values from v8_third_party_heap_files to sources
+        }, {
+          'sources': [
+            '<(V8_ROOT)/src/heap/third-party/heap-api-stub.cc',
+          ],
+        }],
         ['want_separate_host_toolset', {
           'toolsets': ['host', 'target'],
         }],
@@ -865,6 +872,9 @@
          }],
         ['v8_postmortem_support', {
           'dependencies': ['postmortem-metadata#target'],
+        }],
+        ['v8_enable_third_party_heap', {
+          # TODO(targos): add values from v8_third_party_heap_libs to link_settings.libraries
         }],
         # Platforms that don't have Compare-And-Swap (CAS) support need to link atomic library
         # to implement atomic memory access
@@ -1205,6 +1215,8 @@
         '<(V8_ROOT)/include/libplatform/v8-tracing.h',
         '<(V8_ROOT)/src/libplatform/default-foreground-task-runner.cc',
         '<(V8_ROOT)/src/libplatform/default-foreground-task-runner.h',
+        '<(V8_ROOT)/src/libplatform/default-job.cc',
+        '<(V8_ROOT)/src/libplatform/default-job.h',
         '<(V8_ROOT)/src/libplatform/default-platform.cc',
         '<(V8_ROOT)/src/libplatform/default-platform.h',
         '<(V8_ROOT)/src/libplatform/default-worker-threads-task-runner.cc',
