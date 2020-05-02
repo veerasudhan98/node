@@ -56,6 +56,7 @@
       "<(V8_ROOT)/src/builtins/promise-abstract-operations.tq",
       "<(V8_ROOT)/src/builtins/promise-all.tq",
       "<(V8_ROOT)/src/builtins/promise-all-element-closure.tq",
+      "<(V8_ROOT)/src/builtins/promise-any.tq",
       "<(V8_ROOT)/src/builtins/promise-constructor.tq",
       "<(V8_ROOT)/src/builtins/promise-finally.tq",
       "<(V8_ROOT)/src/builtins/promise-misc.tq",
