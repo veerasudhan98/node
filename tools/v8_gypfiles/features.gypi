@@ -212,6 +212,10 @@
     # for ARM64.
     'v8_control_flow_integrity%': 0,
 
+    # Experimental support for native context independent code.
+    # https://crbug.com/v8/8888
+    'v8_enable_nci_code%': 0,
+
     # Variables from v8.gni
 
     # Enable ECMAScript Internationalization API. Enabling this feature will
@@ -237,10 +241,7 @@
         'defines': ['V8_ENABLE_FUTURE',],
       }],
       ['v8_enable_lite_mode==1', {
-        'defines': [
-          'V8_LITE_MODE',
-          'V8_JITLESS_MODE',
-        ],
+        'defines': ['V8_LITE_MODE',],
       }],
       ['v8_enable_gdbjit==1', {
         'defines': ['ENABLE_GDB_JIT_INTERFACE',],
@@ -350,9 +351,11 @@
       ['v8_control_flow_integrity==1', {
         'defines': ['V8_ENABLE_CONTROL_FLOW_INTEGRITY',],
       }],
+      ['v8_enable_nci_code==1', {
+        'defines': ['V8_ENABLE_NCI_CODE',],
+      }],
     ],  # conditions
     'defines': [
-      'V8_EMBEDDED_BUILTINS',
       'V8_GYP_BUILD',
       'V8_TYPED_ARRAY_MAX_SIZE_IN_HEAP=<(v8_typed_array_max_size_in_heap)',
     ],  # defines
