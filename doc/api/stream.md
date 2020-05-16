@@ -95,8 +95,8 @@ destinations of differing speeds will not overwhelm the available memory.
 
 Watermarks only determine the amount of data a stream buffers before it stops
 asking for more data (via calling `readable._read()`). Watermarks do not
-enforce a strict memory limitation in general. Specific stream 
-implementations may choose to enforce stricter limits but doing so is 
+enforce a strict memory limitation in general. Specific stream
+implementations may choose to enforce stricter limits but doing so is
 optional. Specifically, `highWaterMark` is a threshold, not a limit.
 
 Because [`Duplex`][] and [`Transform`][] streams are both `Readable` and
