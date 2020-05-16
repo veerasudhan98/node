@@ -7,7 +7,8 @@
 #include "src/builtins/builtins.h"
 #include "src/codegen/code-stub-assembler.h"
 #include "src/codegen/macro-assembler.h"
-#include "src/heap/heap-inl.h"  // crbug.com/v8/8499
+#include "src/execution/frame-constants.h"
+#include "src/heap/memory-chunk.h"
 #include "src/ic/accessor-assembler.h"
 #include "src/ic/keyed-store-generic.h"
 #include "src/logging/counters.h"
@@ -220,9 +221,9 @@ class RecordWriteCodeStubAssembler : public CodeStubAssembler {
 
   TNode<BoolT> IsPageFlagSet(TNode<IntPtrT> object, int mask) {
     TNode<IntPtrT> page = PageFromAddress(object);
-    TNode<IntPtrT> flags =
-        UncheckedCast<IntPtrT>(Load(MachineType::Pointer(), page,
-                                    IntPtrConstant(MemoryChunk::kFlagsOffset)));
+    TNode<IntPtrT> flags = UncheckedCast<IntPtrT>(
+        Load(MachineType::Pointer(), page,
+             IntPtrConstant(BasicMemoryChunk::kFlagsOffset)));
     return WordNotEqual(WordAnd(flags, IntPtrConstant(mask)),
                         IntPtrConstant(0));
   }
@@ -241,8 +242,8 @@ class RecordWriteCodeStubAssembler : public CodeStubAssembler {
   void GetMarkBit(TNode<IntPtrT> object, TNode<IntPtrT>* cell,
                   TNode<IntPtrT>* mask) {
     TNode<IntPtrT> page = PageFromAddress(object);
-    TNode<IntPtrT> bitmap =
-        Load<IntPtrT>(page, IntPtrConstant(MemoryChunk::kMarkBitmapOffset));
+    TNode<IntPtrT> bitmap = Load<IntPtrT>(
+        page, IntPtrConstant(BasicMemoryChunk::kMarkBitmapOffset));
 
     {
       // Temp variable to calculate cell offset in bitmap.

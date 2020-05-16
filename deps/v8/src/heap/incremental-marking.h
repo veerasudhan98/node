@@ -28,7 +28,7 @@ enum class StepResult {
 
 class V8_EXPORT_PRIVATE IncrementalMarking final {
  public:
-  enum State { STOPPED, SWEEPING, MARKING, COMPLETE };
+  enum State : uint8_t { STOPPED, SWEEPING, MARKING, COMPLETE };
 
   enum CompletionAction { GC_VIA_STACK_GUARD, NO_GC_VIA_STACK_GUARD };
 
@@ -168,6 +168,7 @@ class V8_EXPORT_PRIVATE IncrementalMarking final {
                                  StepOrigin step_origin);
 
   void FinalizeSweeping();
+  bool ContinueConcurrentSweeping();
 
   StepResult Step(double max_step_size_in_ms, CompletionAction action,
                   StepOrigin step_origin);
@@ -317,7 +318,10 @@ class V8_EXPORT_PRIVATE IncrementalMarking final {
   size_t bytes_marked_concurrently_ = 0;
 
   // Must use SetState() above to update state_
-  State state_;
+  // Atomic since main thread can complete marking (= changing state), while a
+  // background thread's slow allocation path will check whether incremental
+  // marking is currently running.
+  std::atomic<State> state_;
 
   bool is_compacting_ = false;
   bool was_activated_ = false;
@@ -325,7 +329,7 @@ class V8_EXPORT_PRIVATE IncrementalMarking final {
   bool finalize_marking_completed_ = false;
   IncrementalMarkingJob incremental_marking_job_;
 
-  GCRequestType request_type_ = NONE;
+  std::atomic<GCRequestType> request_type_{NONE};
 
   Observer new_generation_observer_;
   Observer old_generation_observer_;

@@ -63,6 +63,13 @@ class DataRange {
 
   template <typename T, size_t max_bytes = sizeof(T)>
   T get() {
+    // DISABLE FOR BOOL
+    // The -O3 on release will break the result. This creates a different
+    // observable side effect when invoking get<bool> between debug and release
+    // version, which eventually makes the code output different as well as
+    // raising various unrecoverable errors on runtime. It is caused by
+    // undefined behavior of assigning boolean via memcpy from randomized bytes.
+    STATIC_ASSERT(!(std::is_same<T, bool>::value));
     STATIC_ASSERT(max_bytes <= sizeof(T));
     // We want to support the case where we have less than sizeof(T) bytes
     // remaining in the slice. For example, if we emit an i32 constant, it's
@@ -108,7 +115,7 @@ class WasmGenerator {
     BlockScope(WasmGenerator* gen, WasmOpcode block_type, ValueType result_type,
                ValueType br_type)
         : gen_(gen) {
-      gen->blocks_.push_back(br_type);
+      gen->blocks_.emplace_back(1, br_type);
       gen->builder_->EmitWithU8(block_type, result_type.value_type_code());
     }
 
@@ -154,9 +161,11 @@ class WasmGenerator {
     // There is always at least the block representing the function body.
     DCHECK(!blocks_.empty());
     const uint32_t target_block = data->get<uint32_t>() % blocks_.size();
-    const ValueType break_type = blocks_[target_block];
+    const auto break_types = blocks_[target_block];
 
-    Generate(break_type, data);
+    for (size_t i = 0; i < break_types.size(); ++i) {
+      Generate(break_types[i], data);
+    }
     builder_->EmitWithI32V(
         kExprBr, static_cast<uint32_t>(blocks_.size()) - 1 - target_block);
   }
@@ -166,13 +175,19 @@ class WasmGenerator {
     // There is always at least the block representing the function body.
     DCHECK(!blocks_.empty());
     const uint32_t target_block = data->get<uint32_t>() % blocks_.size();
-    const ValueType break_type = blocks_[target_block];
+    const auto break_types = blocks_[target_block];
 
-    Generate(break_type, data);
+    for (size_t i = 0; i < break_types.size(); ++i) {
+      Generate(break_types[i], data);
+    }
+
     Generate(kWasmI32, data);
     builder_->EmitWithI32V(
         kExprBrIf, static_cast<uint32_t>(blocks_.size()) - 1 - target_block);
-    ConvertOrGenerate(break_type, ValueType(wanted_type), data);
+    for (size_t i = 0; i < break_types.size() - 1; ++i) {
+      builder_->Emit(kExprDrop);
+    }
+    ConvertOrGenerate(break_types.front(), ValueType(wanted_type), data);
   }
 
   // TODO(eholk): make this function constexpr once gcc supports it
@@ -194,6 +209,13 @@ class WasmGenerator {
       case kExprI64AtomicXor:
       case kExprI64AtomicExchange:
       case kExprI64AtomicCompareExchange:
+      case kExprI16x8Load8x8S:
+      case kExprI16x8Load8x8U:
+      case kExprI32x4Load16x4S:
+      case kExprI32x4Load16x4U:
+      case kExprI64x2Load32x2S:
+      case kExprI64x2Load32x2U:
+      case kExprS64x2LoadSplat:
         return 3;
       case kExprI32LoadMem:
       case kExprI64LoadMem32S:
@@ -220,6 +242,7 @@ class WasmGenerator {
       case kExprI64AtomicXor32U:
       case kExprI64AtomicExchange32U:
       case kExprI64AtomicCompareExchange32U:
+      case kExprS32x4LoadSplat:
         return 2;
       case kExprI32LoadMem16S:
       case kExprI32LoadMem16U:
@@ -245,6 +268,7 @@ class WasmGenerator {
       case kExprI64AtomicXor16U:
       case kExprI64AtomicExchange16U:
       case kExprI64AtomicCompareExchange16U:
+      case kExprS16x8LoadSplat:
         return 1;
       case kExprI32LoadMem8S:
       case kExprI32LoadMem8U:
@@ -270,6 +294,7 @@ class WasmGenerator {
       case kExprI64AtomicXor8U:
       case kExprI64AtomicExchange8U:
       case kExprI64AtomicCompareExchange8U:
+      case kExprS8x16LoadSplat:
         return 0;
       default:
         return 0;
@@ -310,6 +335,14 @@ class WasmGenerator {
   void simd_op(DataRange* data) {
     Generate<Args...>(data);
     builder_->EmitWithPrefix(Op);
+  }
+
+  void simd_shuffle(DataRange* data) {
+    Generate<ValueType::kS128, ValueType::kS128>(data);
+    builder_->EmitWithPrefix(kExprS8x16Shuffle);
+    for (int i = 0; i < kSimd128Size; i++) {
+      builder_->EmitByte(static_cast<uint8_t>(data->get<byte>() % 32));
+    }
   }
 
   void drop(DataRange* data) {
@@ -370,19 +403,30 @@ class WasmGenerator {
     }
     // Emit call.
     builder_->EmitWithU32V(kExprCallFunction, func_index);
-    // Convert the return value to the wanted type.
-    ValueType return_type =
-        sig->return_count() == 0 ? kWasmStmt : sig->GetReturn(0);
-    if (return_type == kWasmStmt && wanted_type != kWasmStmt) {
+    if (sig->return_count() == 0 && wanted_type != kWasmStmt) {
       // The call did not generate a value. Thus just generate it here.
       Generate(wanted_type, data);
-    } else if (return_type != kWasmStmt && wanted_type == kWasmStmt) {
-      // The call did generate a value, but we did not want one.
-      builder_->Emit(kExprDrop);
-    } else if (return_type != wanted_type) {
-      // If the returned type does not match the wanted type, convert it.
-      Convert(return_type, wanted_type);
+      return;
     }
+    if (wanted_type == kWasmStmt) {
+      // The call did generate values, but we did not want one.
+      for (size_t i = 0; i < sig->return_count(); ++i) {
+        builder_->Emit(kExprDrop);
+      }
+      return;
+    }
+    // Keep exactly one of the return values on the stack with a combination of
+    // drops and selects, then convert this value to the wanted type.
+    size_t return_index = data->get<uint8_t>() % sig->return_count();
+    for (size_t i = sig->return_count() - 1; i > return_index; --i) {
+      builder_->Emit(kExprDrop);
+    }
+    for (size_t i = return_index; i > 0; --i) {
+      Convert(sig->GetReturn(i), sig->GetReturn(i - 1));
+      builder_->EmitI32Const(0);
+      builder_->Emit(kExprSelect);
+    }
+    Convert(sig->GetReturn(0), wanted_type);
   }
 
   struct Var {
@@ -541,8 +585,14 @@ class WasmGenerator {
         globals_(globals),
         mutable_globals_(mutable_globals) {
     FunctionSig* sig = fn->signature();
-    DCHECK_GE(1, sig->return_count());
-    blocks_.push_back(sig->return_count() == 0 ? kWasmStmt : sig->GetReturn(0));
+    if (sig->return_count() == 0) {
+      blocks_.emplace_back(1, kWasmStmt);
+    } else {
+      blocks_.emplace_back();
+      for (size_t i = 0; i < sig->return_count(); ++i) {
+        blocks_.back().push_back(sig->GetReturn(i));
+      }
+    }
 
     constexpr uint32_t kMaxLocals = 32;
     locals_.resize(data->get<uint8_t>() % kMaxLocals);
@@ -567,7 +617,7 @@ class WasmGenerator {
 
  private:
   WasmFunctionBuilder* builder_;
-  std::vector<ValueType> blocks_;
+  std::vector<std::vector<ValueType>> blocks_;
   const std::vector<FunctionSig*>& functions_;
   std::vector<ValueType> locals_;
   std::vector<ValueType> globals_;
@@ -702,6 +752,8 @@ void WasmGenerator::Generate<ValueType::kI32>(DataRange* data) {
       &WasmGenerator::op<kExprI32SConvertF64, ValueType::kF64>,
       &WasmGenerator::op<kExprI32UConvertF64, ValueType::kF64>,
       &WasmGenerator::op<kExprI32ReinterpretF32, ValueType::kF32>,
+
+      &WasmGenerator::op<kExprI32SConvertSatF32, ValueType::kF32>,
 
       &WasmGenerator::block<ValueType::kI32>,
       &WasmGenerator::loop<ValueType::kI32>,
@@ -1151,21 +1203,125 @@ void WasmGenerator::Generate<ValueType::kS128>(DataRange* data) {
                               ValueType::kS128>,
       &WasmGenerator::simd_op<kExprI32x4GeU, ValueType::kS128,
                               ValueType::kS128>,
-
-      &WasmGenerator::simd_op<kExprI64x2Splat, ValueType::kI64>,
-      &WasmGenerator::simd_op<kExprF32x4Splat, ValueType::kF32>,
-      &WasmGenerator::simd_op<kExprF64x2Splat, ValueType::kF64>,
-
+      &WasmGenerator::simd_op<kExprI32x4Neg, ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprI32x4Shl, ValueType::kS128, ValueType::kI32>,
+      &WasmGenerator::simd_op<kExprI32x4ShrS, ValueType::kS128,
+                              ValueType::kI32>,
+      &WasmGenerator::simd_op<kExprI32x4ShrU, ValueType::kS128,
+                              ValueType::kI32>,
       &WasmGenerator::simd_op<kExprI32x4Add, ValueType::kS128,
                               ValueType::kS128>,
-      &WasmGenerator::simd_op<kExprI64x2Add, ValueType::kS128,
+      &WasmGenerator::simd_op<kExprI32x4Sub, ValueType::kS128,
                               ValueType::kS128>,
-      &WasmGenerator::simd_op<kExprF32x4Add, ValueType::kS128,
+      &WasmGenerator::simd_op<kExprI32x4Mul, ValueType::kS128,
                               ValueType::kS128>,
-      &WasmGenerator::simd_op<kExprF64x2Add, ValueType::kS128,
+      &WasmGenerator::simd_op<kExprI32x4MinS, ValueType::kS128,
+                              ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprI32x4MinU, ValueType::kS128,
+                              ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprI32x4MaxS, ValueType::kS128,
+                              ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprI32x4MaxU, ValueType::kS128,
                               ValueType::kS128>,
 
-      &WasmGenerator::memop<kExprS128LoadMem>};
+      &WasmGenerator::simd_op<kExprI64x2Splat, ValueType::kI64>,
+      &WasmGenerator::simd_op<kExprI64x2Neg, ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprI64x2Shl, ValueType::kS128, ValueType::kI32>,
+      &WasmGenerator::simd_op<kExprI64x2ShrS, ValueType::kS128,
+                              ValueType::kI32>,
+      &WasmGenerator::simd_op<kExprI64x2ShrU, ValueType::kS128,
+                              ValueType::kI32>,
+      &WasmGenerator::simd_op<kExprI64x2Add, ValueType::kS128,
+                              ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprI64x2Sub, ValueType::kS128,
+                              ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprI64x2Mul, ValueType::kS128,
+                              ValueType::kS128>,
+
+      &WasmGenerator::simd_op<kExprF32x4Splat, ValueType::kF32>,
+      &WasmGenerator::simd_op<kExprF32x4Eq, ValueType::kS128, ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprF32x4Ne, ValueType::kS128, ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprF32x4Lt, ValueType::kS128, ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprF32x4Gt, ValueType::kS128, ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprF32x4Le, ValueType::kS128, ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprF32x4Ge, ValueType::kS128, ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprF32x4Abs, ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprF32x4Neg, ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprF32x4Sqrt, ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprF32x4Add, ValueType::kS128,
+                              ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprF32x4Sub, ValueType::kS128,
+                              ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprF32x4Mul, ValueType::kS128,
+                              ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprF32x4Div, ValueType::kS128,
+                              ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprF32x4Min, ValueType::kS128,
+                              ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprF32x4Max, ValueType::kS128,
+                              ValueType::kS128>,
+
+      &WasmGenerator::simd_op<kExprF64x2Splat, ValueType::kF64>,
+      &WasmGenerator::simd_op<kExprF64x2Eq, ValueType::kS128, ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprF64x2Ne, ValueType::kS128, ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprF64x2Lt, ValueType::kS128, ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprF64x2Gt, ValueType::kS128, ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprF64x2Le, ValueType::kS128, ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprF64x2Ge, ValueType::kS128, ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprF64x2Abs, ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprF64x2Neg, ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprF64x2Sqrt, ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprF64x2Add, ValueType::kS128,
+                              ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprF64x2Sub, ValueType::kS128,
+                              ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprF64x2Mul, ValueType::kS128,
+                              ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprF64x2Div, ValueType::kS128,
+                              ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprF64x2Min, ValueType::kS128,
+                              ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprF64x2Max, ValueType::kS128,
+                              ValueType::kS128>,
+
+      &WasmGenerator::simd_op<kExprI32x4SConvertF32x4, ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprI32x4UConvertF32x4, ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprF32x4SConvertI32x4, ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprF32x4UConvertI32x4, ValueType::kS128>,
+
+      &WasmGenerator::simd_op<kExprI8x16SConvertI16x8, ValueType::kS128,
+                              ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprI8x16UConvertI16x8, ValueType::kS128,
+                              ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprI16x8SConvertI32x4, ValueType::kS128,
+                              ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprI16x8UConvertI32x4, ValueType::kS128,
+                              ValueType::kS128>,
+
+      &WasmGenerator::simd_op<kExprI16x8SConvertI8x16Low, ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprI16x8SConvertI8x16High, ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprI16x8UConvertI8x16Low, ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprI16x8UConvertI8x16High, ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprI32x4SConvertI16x8Low, ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprI32x4SConvertI16x8High, ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprI32x4UConvertI16x8Low, ValueType::kS128>,
+      &WasmGenerator::simd_op<kExprI32x4UConvertI16x8High, ValueType::kS128>,
+
+      &WasmGenerator::simd_shuffle,
+      &WasmGenerator::simd_op<kExprS8x16Swizzle, ValueType::kS128,
+                              ValueType::kS128>,
+
+      &WasmGenerator::memop<kExprS128LoadMem>,
+      &WasmGenerator::memop<kExprI16x8Load8x8S>,
+      &WasmGenerator::memop<kExprI16x8Load8x8U>,
+      &WasmGenerator::memop<kExprI32x4Load16x4S>,
+      &WasmGenerator::memop<kExprI32x4Load16x4U>,
+      &WasmGenerator::memop<kExprI64x2Load32x2S>,
+      &WasmGenerator::memop<kExprI64x2Load32x2U>,
+      &WasmGenerator::memop<kExprS8x16LoadSplat>,
+      &WasmGenerator::memop<kExprS16x8LoadSplat>,
+      &WasmGenerator::memop<kExprS32x4LoadSplat>,
+      &WasmGenerator::memop<kExprS64x2LoadSplat>};
 
   GenerateOneOf(alternatives, data);
 }
@@ -1198,10 +1354,11 @@ FunctionSig* GenerateSig(Zone* zone, DataRange* data) {
   // Generate enough parameters to spill some to the stack.
   constexpr int kMaxParameters = 15;
   int num_params = int{data->get<uint8_t>()} % (kMaxParameters + 1);
-  bool has_return = data->get<bool>();
+  constexpr int kMaxReturns = 15;
+  int num_returns = int{data->get<uint8_t>()} % (kMaxReturns + 1);
 
-  FunctionSig::Builder builder(zone, has_return ? 1 : 0, num_params);
-  if (has_return) builder.AddReturn(GetValueType(data));
+  FunctionSig::Builder builder(zone, num_returns, num_params);
+  for (int i = 0; i < num_returns; ++i) builder.AddReturn(GetValueType(data));
   for (int i = 0; i < num_params; ++i) builder.AddParam(GetValueType(data));
   return builder.Build();
 }
@@ -1253,9 +1410,12 @@ class WasmCompileFuzzer : public WasmExecutionFuzzer {
 
       WasmGenerator gen(f, function_signatures, globals, mutable_globals,
                         &function_range);
-      ValueType return_type =
-          sig->return_count() == 0 ? kWasmStmt : sig->GetReturn(0);
-      gen.Generate(return_type, &function_range);
+      if (sig->return_count() == 0) {
+        gen.Generate(kWasmStmt, &function_range);
+      }
+      for (size_t i = 0; i < sig->return_count(); ++i) {
+        gen.Generate(sig->GetReturn(i), &function_range);
+      }
 
       f->Emit(kExprEnd);
       if (i == 0) builder.AddExport(CStrVector("main"), f);

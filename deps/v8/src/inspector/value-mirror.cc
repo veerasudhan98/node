@@ -814,10 +814,10 @@ void getInternalPropertiesForPreview(
       object->IsBigIntObject()) {
     whitelist.emplace_back("[[PrimitiveValue]]");
   } else if (object->IsPromise()) {
-    whitelist.emplace_back("[[PromiseStatus]]");
-    whitelist.emplace_back("[[PromiseValue]]");
+    whitelist.emplace_back("[[PromiseState]]");
+    whitelist.emplace_back("[[PromiseResult]]");
   } else if (object->IsGeneratorObject()) {
-    whitelist.emplace_back("[[GeneratorStatus]]");
+    whitelist.emplace_back("[[GeneratorState]]");
   }
   for (auto& mirror : mirrors) {
     if (std::find(whitelist.begin(), whitelist.end(), mirror.name) ==
@@ -1601,6 +1601,10 @@ std::unique_ptr<ValueMirror> ValueMirror::create(v8::Local<v8::Context> context,
   }
   if (value->IsSymbol()) {
     return std::make_unique<SymbolMirror>(value.As<v8::Symbol>());
+  }
+  if (v8::debug::WasmValue::IsWasmValue(value)) {
+    // TODO(v8:10347) WasmValue is not created anywhere yet.
+    UNIMPLEMENTED();
   }
   auto clientSubtype = (value->IsUndefined() || value->IsObject())
                            ? clientFor(context)->valueSubtype(value)

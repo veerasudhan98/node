@@ -148,7 +148,7 @@ class Handle final : public HandleBase {
   template <typename S>
   inline static const Handle<T> cast(Handle<S> that);
 
-  // TODO(yangguo): Values that contain empty handles should be declared as
+  // Consider declaring values that contain empty handles as
   // MaybeHandle to force validation before being used as handles.
   static const Handle<T> null() { return Handle<T>(); }
 
@@ -199,6 +199,11 @@ class HandleScope {
   explicit inline HandleScope(Isolate* isolate);
   inline HandleScope(HandleScope&& other) V8_NOEXCEPT;
 
+  // Allow placement new.
+  void* operator new(size_t size, void* storage) {
+    return ::operator new(size, storage);
+  }
+
   inline ~HandleScope();
 
   inline HandleScope& operator=(HandleScope&& other) V8_NOEXCEPT;
@@ -235,8 +240,8 @@ class HandleScope {
 
  private:
   // Prevent heap allocation or illegal handle scopes.
-  void* operator new(size_t size);
-  void operator delete(void* size_t);
+  void* operator new(size_t size) = delete;
+  void operator delete(void* size_t) = delete;
 
   Isolate* isolate_;
   Address* prev_next_;

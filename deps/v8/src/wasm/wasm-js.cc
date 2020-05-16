@@ -73,8 +73,12 @@ class WasmStreaming::WasmStreamingImpl {
 
   void SetClient(std::shared_ptr<Client> client) {
     streaming_decoder_->SetModuleCompiledCallback(
-        [client](const std::shared_ptr<i::wasm::NativeModule>& native_module) {
-          client->OnModuleCompiled(Utils::Convert(native_module));
+        [client, streaming_decoder = streaming_decoder_](
+            const std::shared_ptr<i::wasm::NativeModule>& native_module) {
+          i::Vector<const char> url = streaming_decoder->url();
+          auto compiled_wasm_module =
+              CompiledWasmModule(native_module, url.begin(), url.size());
+          client->OnModuleCompiled(compiled_wasm_module);
         });
   }
 
@@ -331,14 +335,10 @@ class InstantiateBytesResultResolver
         isolate_->factory()->NewJSObject(isolate_->object_function());
 
     i::Handle<i::String> instance_name =
-        isolate_->factory()
-            ->NewStringFromOneByte(i::StaticCharVector("instance"))
-            .ToHandleChecked();
+        isolate_->factory()->NewStringFromStaticChars("instance");
 
     i::Handle<i::String> module_name =
-        isolate_->factory()
-            ->NewStringFromOneByte(i::StaticCharVector("module"))
-            .ToHandleChecked();
+        isolate_->factory()->NewStringFromStaticChars("module");
 
     i::JSObject::AddProperty(isolate_, result, instance_name, instance,
                              i::NONE);
@@ -1364,6 +1364,11 @@ void WebAssemblyGlobal(const v8::FunctionCallbackInfo<v8::Value>& args) {
       }
       break;
     }
+    case i::wasm::ValueType::kRef:
+    case i::wasm::ValueType::kOptRef:
+    case i::wasm::ValueType::kEqRef:
+      // TODO(7748): Implement these.
+      UNIMPLEMENTED();
     case i::wasm::ValueType::kStmt:
     case i::wasm::ValueType::kS128:
     case i::wasm::ValueType::kBottom:
@@ -1812,6 +1817,11 @@ void WebAssemblyGlobalGetValueCommon(
                      receiver->GetRef()->IsNull());
       return_value.Set(Utils::ToLocal(receiver->GetRef()));
       break;
+    case i::wasm::ValueType::kRef:
+    case i::wasm::ValueType::kOptRef:
+    case i::wasm::ValueType::kEqRef:
+      // TODO(7748): Implement these.
+      UNIMPLEMENTED();
     case i::wasm::ValueType::kBottom:
     case i::wasm::ValueType::kStmt:
     case i::wasm::ValueType::kS128:
@@ -1897,6 +1907,11 @@ void WebAssemblyGlobalSetValue(
       }
       break;
     }
+    case i::wasm::ValueType::kRef:
+    case i::wasm::ValueType::kOptRef:
+    case i::wasm::ValueType::kEqRef:
+      // TODO(7748): Implement these.
+      UNIMPLEMENTED();
     case i::wasm::ValueType::kBottom:
     case i::wasm::ValueType::kStmt:
     case i::wasm::ValueType::kS128:
@@ -2045,8 +2060,20 @@ void WasmJs::Install(Isolate* isolate, bool exposed_on_global_object) {
   InstallFunc(isolate, webassembly, "validate", WebAssemblyValidate, 1);
   InstallFunc(isolate, webassembly, "instantiate", WebAssemblyInstantiate, 1);
 
+  // The implementation of streaming compilation depends on async compilation.
+  // If async compilation is disabled, then a streaming compilation callback
+  // should not be set.
+  CHECK_IMPLIES(!FLAG_wasm_async_compilation,
+                isolate->wasm_streaming_callback() == nullptr);
+
   if (FLAG_wasm_test_streaming) {
-    isolate->set_wasm_streaming_callback(WasmStreamingCallbackForTesting);
+    if (FLAG_wasm_async_compilation) {
+      isolate->set_wasm_streaming_callback(WasmStreamingCallbackForTesting);
+    } else {
+      printf(
+          "--wasm-test-streaming gets ignored because async compilation is "
+          "disabled.");
+    }
   }
 
   if (isolate->wasm_streaming_callback() != nullptr) {
