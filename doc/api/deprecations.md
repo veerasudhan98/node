@@ -2670,7 +2670,7 @@ Use [`request.destroy()`][] instead of [`request.abort()`][].
 ### DEP0XXX: `repl.inputStream` and `repl.outputStream`
 <!-- YAML
 changes:
-  - version: REPLACEME
+  - version: v14.3.0
     pr-url: https://github.com/nodejs/node/pull/33294
     description: Documentation-only (supports [`--pending-deprecation`][]).
 -->
@@ -2684,7 +2684,7 @@ instead of `.inputStream` and `.output` instead of `.outputStream`.
 ### DEP0XX1: `repl._builtinLibs`
 <!-- YAML
 changes:
-  - version: REPLACEME
+  - version: v14.3.0
     pr-url: https://github.com/nodejs/node/pull/33294
     description: Documentation-only (supports [`--pending-deprecation`][]).
 -->
